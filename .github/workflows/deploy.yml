@@ -62,8 +62,6 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       ETA_OPENAI_KEY: ${{ secrets.ETA_OPENAI_KEY }}
-    outputs:
-      registry: ${{ steps.login-ecr.outputs.registry }}
 
     strategy:
       matrix:
@@ -120,9 +118,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
       - name: Add env file for docker-compose.yml
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          echo "ECR_REGISTRY=${{ needs.upload-image-fastapi.outputs.registry }}" >> .env
+          echo "ECR_REGISTRY=$ECR_REGISTRY" >> .env
           echo "ECR_REPOSITORY_SPRING_BOOT=$ECR_REPOSITORY_SPRING_BOOT" >> .env
           echo "ECR_REPOSITORY_FASTAPI=$ECR_REPOSITORY_FASTAPI" >> .env
           echo "IMAGE_TAG=$IMAGE_TAG" >> .env
@@ -130,13 +141,6 @@ jobs:
       - name: Make zip file
         run: zip -qq $IMAGE_TAG.zip appspec.yml docker-compose.yml deploy .env
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-      
       - name: Upload to S3
         run: aws s3 cp --region ${{ env.AWS_REGION }} ./$IMAGE_TAG.zip s3://$BUCKET_NAME/$IMAGE_TAG.zip
 
