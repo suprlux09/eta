@@ -1,0 +1,20 @@
+services:
+  fastapi:
+    image: ${ECR_REGISTRY}/${ECR_REPOSITORY_FASTAPI}:${IMAGE_TAG}
+    networks: 
+      eta:
+        aliases:
+          - fastapi-server
+    ports: 
+      - 8000:8000
+
+  spring-boot:
+    image: ${ECR_REGISTRY}/${ECR_REPOSITORY_SPRING_BOOT}:${IMAGE_TAG}
+    networks: 
+      - eta
+    ports: 
+      - 8080:8080
+
+networks:
+  eta:
+    driver: bridge

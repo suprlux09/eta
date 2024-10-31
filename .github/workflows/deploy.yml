@@ -1,0 +1,145 @@
+name: Deploy
+
+on:
+  push:
+    branches: [master]
+    
+permissions: write-all
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY_SPRING_BOOT: eta/spring-boot
+  ECR_REPOSITORY_FASTAPI: eta/fastapi
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  upload-image-spring-boot:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set Up JDK-17
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'oracle'
+
+      - name: Set application.yml
+        run: echo "${{ secrets.SPRING_APPLICATION }}" > ./eta/src/main/resources/application.yml
+
+      - name: Build
+        run: cd eta; ./gradlew build -x test
+
+      # - name: Publish Test Results
+      #   uses: EnricoMi/publish-unit-test-result-action@v2
+      #   if: always()
+      #   with:
+      #     files: ./eta/build/test-results/**/*.xml
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          cd eta
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY_SPRING_BOOT:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_SPRING_BOOT:$IMAGE_TAG
+
+  upload-image-fastapi:
+    runs-on: ubuntu-22.04
+    env:
+      ETA_OPENAI_KEY: ${{ secrets.ETA_OPENAI_KEY }}
+    outputs:
+      registry: ${{ steps.login-ecr.outputs.registry }}
+
+    strategy:
+      matrix:
+        python-version: ["3.10"]
+
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          cd fastapi_server
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # - name: Run pytest
+      #   run: |
+      #     cd fastapi_server
+      #     pytest
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          cd fastapi_server
+          docker build --build-arg ETA_OPENAI_KEY=$ETA_OPENAI_KEY -t $ECR_REGISTRY/$ECR_REPOSITORY_FASTAPI:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY_FASTAPI:$IMAGE_TAG
+
+  upload-source-to-s3:
+    needs: [upload-image-spring-boot, upload-image-fastapi]
+    runs-on: ubuntu-22.04
+    env:
+      BUCKET_NAME: "script-upload-for-deployment"
+      CODE_DEPLOY_APP_NAME: "eta-ec2-deploy"
+      DEPLOYMENT_GROUP_NAME: "ec2-deploy-group"
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Add env file for docker-compose.yml
+        run: |
+          echo "ECR_REGISTRY=${{ needs.upload-image-fastapi.outputs.registry }}" >> .env
+          echo "ECR_REPOSITORY_SPRING_BOOT=$ECR_REPOSITORY_SPRING_BOOT" >> .env
+          echo "ECR_REPOSITORY_FASTAPI=$ECR_REPOSITORY_FASTAPI" >> .env
+          echo "IMAGE_TAG=$IMAGE_TAG" >> .env
+
+      - name: Make zip file
+        run: zip -qq $IMAGE_TAG.zip appspec.yml docker-compose.yml deploy .env
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Upload to S3
+        run: aws s3 cp --region ${{ env.AWS_REGION }} ./$IMAGE_TAG.zip s3://$BUCKET_NAME/$IMAGE_TAG.zip
+
+      - name: Code Deploy
+        run: aws deploy create-deployment --application-name $CODE_DEPLOY_APP_NAME --deployment-config-name CodeDeployDefault.AllAtOnce --deployment-group-name $DEPLOYMENT_GROUP_NAME --s3-location bucket=$BUCKET_NAME,bundleType=zip,key=$IMAGE_TAG.zip
+

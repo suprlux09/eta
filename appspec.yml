@@ -1,0 +1,15 @@
+version: 0.0
+os: linux
+
+files:
+  - source: /
+    destination: /home/ubuntu/eta-deploy-ec2
+permissions:
+  - object: /home/ubuntu/eta-deploy-ec2/
+    owner: ubuntu
+    group: ubuntu
+hooks:
+  AfterInstall:
+    - location: ./deploy
+      timeout: 60
+      runas: ubuntu
